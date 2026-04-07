@@ -160,6 +160,10 @@ class StatsTracker(fx.Interpreter):
             node.input_shape = inp[0].shape
 
     def update_output_stats(self, result: torch.Tensor, node: fx.Node):
+        # Skip side-effect nodes that produce no tensor output (e.g. weight constraints).
+        if not isinstance(result, torch.Tensor):
+            return
+
         # Update output statistics based on actual result tensor
         node.output_min = min(node.output_min, result.min())
         node.output_max = max(node.output_max, result.max())
