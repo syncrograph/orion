@@ -30,33 +30,36 @@ def construct_conv2d_toeplitz(conv_layer, weight):
     N, on_Ci, on_Hi, on_Wi = conv_layer.fhe_input_shape
     on_Co, on_Ho, on_Wo = conv_layer.fhe_output_shape[1:]
     Ho, Wo = conv_layer.output_shape[2:]
-   
-    P = conv_layer.padding[0]
+
+    P_h = conv_layer.padding[0]
+    P_w = conv_layer.padding[1]
     D = conv_layer.dilation[0]
-    iG = conv_layer.input_gap 
-    oG = conv_layer.output_gap
-    kW, kH = weight.shape[2:]
+    iG_h, iG_w = (conv_layer.input_gap if isinstance(conv_layer.input_gap, tuple)
+                  else (conv_layer.input_gap, conv_layer.input_gap))
+    oG_h, oG_w = (conv_layer.output_gap if isinstance(conv_layer.output_gap, tuple)
+                  else (conv_layer.output_gap, conv_layer.output_gap))
+    kH, kW = weight.shape[2:]
 
     def compute_first_kernel_position():
-        mpx_anchors = valid_image_indices[:, :iG, :iG].reshape(-1, 1)
+        mpx_anchors = valid_image_indices[:, :iG_h, :iG_w].reshape(-1, 1)
 
-        row_idxs = torch.arange(0, kH*D*iG, D*iG).reshape(-1, 1)
-        col_idxs = torch.arange(0, kW*D*iG, D*iG)
+        row_idxs = torch.arange(0, kH * D * iG_h, D * iG_h).reshape(-1, 1)
+        col_idxs = torch.arange(0, kW * D * iG_w, D * iG_w)
         kernel_offsets = valid_image_indices[0, row_idxs, col_idxs].flatten()
-        
+
         img_pixels_touched = mpx_anchors + kernel_offsets
         return img_pixels_touched.flatten()
-    
+
     def compute_row_interchange_map():
         output_indices = torch.arange(on_Ho * on_Wo).reshape(on_Ho, on_Wo)
-        
-        start_indices = output_indices[:oG, :oG].flatten()
-        corner_indices = output_indices[0:(Ho*oG):oG, 0:(Wo*oG):oG].reshape(-1, 1)
+
+        start_indices = output_indices[:oG_h, :oG_w].flatten()
+        corner_indices = output_indices[0:(Ho * oG_h):oG_h, 0:(Wo * oG_w):oG_w].reshape(-1, 1)
         return corner_indices + start_indices
-    
+
     # Padded input dimensions with multiplexing
-    Hi_pad = on_Hi + 2*P*iG 
-    Wi_pad = on_Wi + 2*P*iG
+    Hi_pad = on_Hi + 2 * P_h * iG_h
+    Wi_pad = on_Wi + 2 * P_w * iG_w
 
     # Initialize our sparse Toeplitz matrix
     n_rows = on_Co * on_Ho * on_Wo
@@ -67,18 +70,18 @@ def construct_conv2d_toeplitz(conv_layer, weight):
     valid_image_indices = torch.arange(n_cols).reshape(on_Ci, Hi_pad, Wi_pad)
 
     # Pad the kernel's input and output channels to the nearest multiple
-    # of gap^2 to ensure that multiplexing works.
-    kernel = torch.zeros(on_Co * oG**2, on_Ci * iG**2, kW, kH) 
+    # of iG_h*iG_w and oG_h*oG_w to ensure that multiplexing works.
+    kernel = torch.zeros(on_Co * oG_h * oG_w, on_Ci * iG_h * iG_w, kH, kW)
     kernel[:weight.shape[0], :weight.shape[1], ...] = weight
 
     # All the indices the kernel initially touches
     initial_kernel_position = compute_first_kernel_position()
 
-    # Create our row-interchange map that dictates how we permute rows for 
-    # optimal packing. Also return all indices that the first top-left filter 
+    # Create our row-interchange map that dictates how we permute rows for
+    # optimal packing. Also return all indices that the first top-left filter
     # value touches throughout the convolution.
     row_map = compute_row_interchange_map()
-    corner_indices = valid_image_indices[0, 0:(Ho*oG):oG, 0:(Wo*oG):oG].flatten() 
+    corner_indices = valid_image_indices[0, 0:(Ho * oG_h):oG_h, 0:(Wo * oG_w):oG_w].flatten()
 
     # Create offsets for the multiplexed output channels.
     out_channels = (torch.arange(on_Co) * (on_Ho * on_Wo)).reshape(on_Co, 1)
@@ -86,7 +89,7 @@ def construct_conv2d_toeplitz(conv_layer, weight):
     # Flattened kernel populates rows of our Toeplitz matrix
     kernel_flat = kernel.reshape(kernel.shape[0], -1)
 
-    # Iterate over all positions that the top-left kernel element can touch 
+    # Iterate over all positions that the top-left kernel element can touch
     # populating the correct (permuted) rows of our Toeplitz matrix.
     for i, start_idx in enumerate(corner_indices):
         rows = (row_map[i] + out_channels).reshape(-1, 1)
@@ -94,11 +97,11 @@ def construct_conv2d_toeplitz(conv_layer, weight):
         toeplitz[rows, cols] = kernel_flat
 
     # Keep only the columns corresponding to the non-padded input image.
-    row_idxs = torch.arange(P*iG, P*iG + on_Hi).reshape(-1, 1)
-    col_idxs = torch.arange(P*iG, P*iG + on_Wi)
+    row_idxs = torch.arange(P_h * iG_h, P_h * iG_h + on_Hi).reshape(-1, 1)
+    col_idxs = torch.arange(P_w * iG_w, P_w * iG_w + on_Wi)
     image_indices = valid_image_indices[:, row_idxs, col_idxs].flatten()
     toeplitz = toeplitz.tocsc()[:, image_indices]
-    
+
     # Support batching
     toeplitz = sp.kron(sp.eye(N, dtype="f"), toeplitz, format="csr")
     return toeplitz
@@ -133,15 +136,16 @@ def construct_linear_matrix(linear_layer):
         matrix = linear_layer.on_weight 
     else: # Prior layer was not a linear layer
         out_features = linear_layer.out_features
-        input_gap = linear_layer.input_gap 
-        N, Ci, Hi, Wi = linear_layer.input_shape 
+        input_gap = linear_layer.input_gap
+        iG_h, iG_w = input_gap if isinstance(input_gap, tuple) else (input_gap, input_gap)
+        N, Ci, Hi, Wi = linear_layer.input_shape
         on_Ci, on_Hi, on_Wi = linear_layer.fhe_input_shape[1:]
-        
+
         reshaped = linear_layer.on_weight.reshape(out_features, Ci, Hi, Wi)
         reshaped = multiplex(reshaped, input_gap)
 
         matrix = torch.zeros(out_features, on_Ci, on_Hi, on_Wi)
-        matrix[..., :Hi*input_gap, :Wi*input_gap] = reshaped 
+        matrix[..., :Hi * iG_h, :Wi * iG_w] = reshaped
         matrix = matrix.reshape(out_features, -1)
    
     matrix = torch.kron(torch.eye(N), matrix) 
@@ -156,14 +160,25 @@ def construct_linear_bias(linear_layer):
 #       Helper Functions      #
 #-----------------------------#
 
+def _pixel_shuffle_rect(x, h_gap, w_gap):
+    """Rectangular pixel shuffle: (N, C*h_gap*w_gap, H, W) -> (N, C, H*h_gap, W*w_gap)."""
+    N, C_hw, H, W = x.shape
+    C = C_hw // (h_gap * w_gap)
+    x = x.reshape(N, C, h_gap, w_gap, H, W)
+    x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
+    return x.reshape(N, C, H * h_gap, W * w_gap)
+
 def multiplex(matrix, gap):
     N, Ci, Hi, Wi = matrix.shape
-    Co = math.ceil(Ci / (gap**2))
-    
-    # Pad the tensor to have channels divisible by gap^2
-    padded = torch.zeros(N, Co * gap**2, Hi, Wi)
+    h_gap, w_gap = gap if isinstance(gap, tuple) else (gap, gap)
+    Co = math.ceil(Ci / (h_gap * w_gap))
+
+    # Pad the tensor to have channels divisible by h_gap*w_gap
+    padded = torch.zeros(N, Co * h_gap * w_gap, Hi, Wi)
     padded[:, :Ci, ...] = matrix
-    return F.pixel_shuffle(padded, gap) # multiplexed
+    if h_gap == w_gap:
+        return F.pixel_shuffle(padded, h_gap)
+    return _pixel_shuffle_rect(padded, h_gap, w_gap)
 
 def resolve_grouped_conv(conv_layer):
     on_weight = conv_layer.on_weight.repeat(1, conv_layer.groups, 1, 1)

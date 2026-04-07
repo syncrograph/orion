@@ -62,8 +62,8 @@ class StatsTracker(fx.Interpreter):
             node.output_shape = None
             node.fhe_input_shape = None
             node.fhe_output_shape = None
-            node.input_gap = 1
-            node.output_gap = 1
+            node.input_gap = (1, 1)
+            node.output_gap = (1, 1)
         
     def run_node(self, node: fx.Node):
         # Run one node and track its input/output stats
@@ -114,13 +114,6 @@ class StatsTracker(fx.Interpreter):
         # Check module-specific FHE compatibility requirements
         submodule = self.module.get_submodule(node.target)
         
-        # Check stride equality in pooling layers
-        stride = getattr(submodule, "stride", None)
-        if stride and len(set(stride)) > 1:
-            raise ValueError(
-                f"Stride for {node.name} must be equal in all directions: {stride}"
-            )
-        
         # Check BatchNorm parent count
         is_batchnorm = isinstance(submodule, BatchNormNd)
         has_multiple_parents = len(node.all_input_nodes) > 1
@@ -160,6 +153,10 @@ class StatsTracker(fx.Interpreter):
             node.input_shape = inp[0].shape
 
     def update_output_stats(self, result: torch.Tensor, node: fx.Node):
+        # Skip side-effect nodes that produce no tensor output (e.g. weight constraints).
+        if not isinstance(result, torch.Tensor):
+            return
+
         # Update output statistics based on actual result tensor
         node.output_min = min(node.output_min, result.min())
         node.output_max = max(node.output_max, result.max())

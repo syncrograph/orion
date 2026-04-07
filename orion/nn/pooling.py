@@ -70,11 +70,11 @@ class AdaptiveAvgPool2d(AvgPool2d):
         input_shape = kwargs['input_shape']
         output_shape = kwargs['output_shape']
 
-        # We'll have to manually calculate the stride here because it is not
-        # passed as an argument to AdaptiveAvgPool2d, yet we need it ASAP
-        # to propagate FHE shapes and multiplexed gaps.
-        return input_gap * (input_shape[2] // output_shape[2])
-    
+        iG_h, iG_w = input_gap if isinstance(input_gap, tuple) else (input_gap, input_gap)
+        stride_h = input_shape[2] // output_shape[2]
+        stride_w = input_shape[3] // output_shape[3]
+        return (iG_h * stride_h, iG_w * stride_w)
+
     def compute_fhe_output_shape(self, **kwargs):
         input_shape = kwargs['input_shape']
         output_shape = kwargs['clear_output_shape']
@@ -86,13 +86,12 @@ class AdaptiveAvgPool2d(AvgPool2d):
         output_gap = self.compute_fhe_output_gap(
             input_gap=input_gap, input_shape=input_shape, output_shape=output_shape
         )
+        oG_h, oG_w = output_gap if isinstance(output_gap, tuple) else (output_gap, output_gap)
 
-        # We'll also need to compute this ASAP too, since FHE shapes are
-        # propogated to future layers in orion.fit().
-        on_Co = math.ceil(Co / (output_gap**2))
-        on_Ho = max(Hi, Ho*output_gap)
-        on_Wo = max(Wi, Wo*output_gap)
-        
+        on_Co = math.ceil(Co / (oG_h * oG_w))
+        on_Ho = max(Hi, Ho * oG_h)
+        on_Wo = max(Wi, Wo * oG_w)
+
         return torch.Size((No, on_Co, on_Ho, on_Wo))
 
     def forward(self, x):

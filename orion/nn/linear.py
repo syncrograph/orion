@@ -106,7 +106,7 @@ class Linear(LinearTransform):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def compute_fhe_output_gap(self, **kwargs):
-        return 1 # linear layers in reset the multiplexed gap to 1.
+        return (1, 1)  # linear layers reset the multiplexed gap to 1.
 
     def compute_fhe_output_shape(self, **kwargs) -> tuple:
         # Linear layers also remove any padded zeros, Therefore the output 
@@ -204,11 +204,11 @@ class Conv2d(LinearTransform):
                 f"groups={self.groups}, " + super().extra_repr())
 
     def compute_fhe_output_gap(self, **kwargs):
-        # Strided convolutions increase the multiplexed gap by a factor 
-        # of the stride.
-        input_gap = kwargs['input_gap']  
-        return input_gap * self.stride[0]
-    
+        # Strided convolutions increase the multiplexed gap independently per axis.
+        input_gap = kwargs['input_gap']
+        iG_h, iG_w = input_gap if isinstance(input_gap, tuple) else (input_gap, input_gap)
+        return (iG_h * self.stride[0], iG_w * self.stride[1])
+
     def compute_fhe_output_shape(self, **kwargs) -> tuple:
         input_shape = kwargs['input_shape']
         clear_output_shape = kwargs['clear_output_shape']
@@ -217,10 +217,11 @@ class Conv2d(LinearTransform):
         Hi, Wi = input_shape[2:]
         N, Co, Ho, Wo = clear_output_shape
         output_gap = self.compute_fhe_output_gap(input_gap=input_gap)
-        
-        on_Co = math.ceil(Co / (output_gap**2))
-        on_Ho = max(Hi, Ho*output_gap)
-        on_Wo = max(Wi, Wo*output_gap)
+        oG_h, oG_w = output_gap if isinstance(output_gap, tuple) else (output_gap, output_gap)
+
+        on_Co = math.ceil(Co / (oG_h * oG_w))
+        on_Ho = max(Hi, Ho * oG_h)
+        on_Wo = max(Wi, Wo * oG_w)
 
         return torch.Size((N, on_Co, on_Ho, on_Wo))
     
