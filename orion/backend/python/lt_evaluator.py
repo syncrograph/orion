@@ -108,7 +108,7 @@ class NewEvaluator:
             layer.create_dataset("output_min", data=output_min.item())
             layer.create_dataset("output_max", data=output_max.item())
 
-            diags_group = layer.require_group("diagonals", track_order=True)
+            diags_group = layer.require_group("diagonals")
             for (row, col), diags in diagonals.items():
                 block_idx = f"{row}_{col}"
                 block_diags_group = diags_group.create_group(block_idx, track_order=True)
